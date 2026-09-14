@@ -14,3 +14,7 @@ venv/
 
 # 发布/通知的本地凭据与运行时产物
 summaries.json.bak
+
+# 本地应用绑定元数据（本机专属，不入库）
+.wbapp_*.genie
+.workbuddy/applications.yaml
