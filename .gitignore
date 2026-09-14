@@ -11,3 +11,6 @@ venv/
 .idea/
 .vscode/
 *.swp
+
+# 发布/通知的本地凭据与运行时产物
+summaries.json.bak

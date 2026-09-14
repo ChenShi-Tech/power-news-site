@@ -31,6 +31,11 @@ DATA_DIR = os.path.join(SOURCE_ROOT, "data")
 SITE_ROOT = os.path.dirname(os.path.abspath(__file__))
 OUT_JSON = os.path.join(SITE_ROOT, "site", "data", "news.json")
 
+# 附件体积控制：站点是公开的，避免发布包失控
+# （实测原始附件合计 108MB，含单个 18MB 的 zip，必须限制）
+MAX_ATTACH_BYTES = 5 * 1024 * 1024           # 单个附件上限
+MAX_ATTACH_TOTAL = 40 * 1024 * 1024          # 全站附件累计上限
+
 # ---------------------------------------------------------------- 分类体系
 
 # 主分类（用于首页 tab 筛选）
@@ -454,6 +459,15 @@ def scan_data_dir() -> list[dict]:
                     meta = parse_md_header(raw)
                     if not meta.get("url"):
                         continue
+                    # 附件：命名规则为 <md文件名去扩展名>-附件N.ext
+                    atts = []
+                    stem = fn[:-3]
+                    try:
+                        for f2 in sorted(os.listdir(cat_path)):
+                            if f2.startswith(stem + "-附件"):
+                                atts.append(os.path.join(cat_path, f2))
+                    except Exception:
+                        pass
                     out.append({
                         "org": meta.get("org") or org,
                         "column": meta.get("column") or cat,
@@ -463,27 +477,39 @@ def scan_data_dir() -> list[dict]:
                         "list_summary": meta.get("summary", ""),
                         "archive": os.path.relpath(md_path, SOURCE_ROOT),
                         "raw": raw,
+                        "attachments": atts,
                     })
     return out
 
 
 def load_ai_summaries() -> dict:
-    """从 reports/*.md 读「AI摘要」字段，按原文 URL 关联。
+    """回收 AI 摘要，按原文 URL 关联。
 
-    AI 摘要由每日采集自动化写入报告，不在正文存档里，因此需要单独回收。
+    两个来源：
+    1. `reports/*.md` —— 每日采集自动化写入的 AI摘要字段
+    2. `summaries.json` —— gen_summaries.py 用 LLM 补生成的（优先级更高）
     """
     out: dict = {}
-    if not os.path.isdir(REPORT_DIR):
-        return out
-    for rf in sorted(os.listdir(REPORT_DIR)):
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}\.md", rf):
-            continue
+    if os.path.isdir(REPORT_DIR):
+        for rf in sorted(os.listdir(REPORT_DIR)):
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}\.md", rf):
+                continue
+            try:
+                for it in parse_report(os.path.join(REPORT_DIR, rf)):
+                    if it.get("ai") and it.get("url"):
+                        out[it["url"].strip().rstrip("/")] = it["ai"]
+            except Exception:
+                continue
+
+    manual = os.path.join(SITE_ROOT, "summaries.json")
+    if os.path.isfile(manual):
         try:
-            for it in parse_report(os.path.join(REPORT_DIR, rf)):
-                if it.get("ai") and it.get("url"):
-                    out[it["url"].strip().rstrip("/")] = it["ai"]
+            with open(manual, encoding="utf-8") as f:
+                for k, v in (json.load(f) or {}).items():
+                    if v and str(v).strip():
+                        out[str(k).strip().rstrip("/")] = str(v).strip()
         except Exception:
-            continue
+            pass
     return out
 
 
@@ -747,6 +773,20 @@ def derive_tags(title: str, category: str, org: str, body: str, ai: str) -> list
     return tags[:3]
 
 
+def org_short_name(org: str) -> str:
+    """机构短名：用于时间轴在缺少发布时间时显示来源标识。"""
+    if org in ORG_META and ORG_META[org][1]:
+        return ORG_META[org][1]
+    m = re.match(r"区域能源监管局-(.+)", org or "")
+    if m:
+        return m.group(1)          # 华北 / 东北 / 华东 …
+    if org == "北极星电力市场网":
+        return "北极星"
+    if org == "中国能源报":
+        return "能源报"
+    return (org or "")[:3]
+
+
 def derive_category(title: str, raw_cat: str, org: str, body: str, ai: str) -> str:
     """推导主分类：仅用标题判定，未命中则按栏目兜底。
 
@@ -775,7 +815,9 @@ def make_short_title(title: str, limit: int = 46) -> str:
     return t[:limit] + "…"
 
 
-RE_TIME_INLINE = re.compile(r"(\d{4})[-年/](\d{1,2})[-月/](\d{1,2})日?\s+(\d{1,2}):(\d{2})")
+RE_TIME_INLINE = re.compile(
+    r"(\d{4})[-年/](\d{1,2})[-月/](\d{1,2})日?[\sT]+(\d{1,2})[:：](\d{2})"
+)
 
 
 def extract_pub_time(text: str) -> str:
@@ -885,6 +927,132 @@ def parse_report(path: str) -> list[dict]:
 # ---------------------------------------------------------------- 主流程
 
 
+def build_trends(items: list[dict]) -> dict:
+    """按日 / 按分类的时间序列，供"关于"页画趋势图。
+
+    用途举例：现货市场相关新闻量突然放大，往往对应政策窗口期。
+    """
+    day_cat: dict[str, dict[str, int]] = {}
+    for it in items:
+        d = it.get("date") or ""
+        if not d:
+            continue
+        slot = day_cat.setdefault(d, {})
+        c = it.get("category") or "其他"
+        slot[c] = slot.get(c, 0) + 1
+
+    days = sorted(day_cat)
+    cats = [c for c, _ in sorted(
+        ((c, sum(v.get(c, 0) for v in day_cat.values())) for c in CATEGORIES),
+        key=lambda kv: -kv[1])]
+
+    return {
+        "days": days,
+        "categories": cats,
+        "series": {c: [day_cat[d].get(c, 0) for d in days] for c in cats},
+        "total": [len([1]) * sum(day_cat[d].values()) for d in days],
+    }
+
+
+def write_feed(items: list[dict], limit: int = 60) -> str:
+    """生成 RSS 2.0 订阅源（site/feed.xml）。"""
+    from email.utils import format_datetime
+    from datetime import timezone
+
+    base = "https://powhot-electric-news.app.workbuddy.host"
+    seen_titles = set()
+    picked = []
+    for it in items:
+        t = it.get("title") or ""
+        if t in seen_titles:
+            continue
+        seen_titles.add(t)
+        picked.append(it)
+        if len(picked) >= limit:
+            break
+
+    def rfc822(d: str, hhmm: str = "") -> str:
+        try:
+            dt = datetime.strptime((d or "1970-01-01") + " " + (hhmm or "09:00"),
+                                   "%Y-%m-%d %H:%M")
+            return format_datetime(dt.replace(tzinfo=timezone(timedelta(hours=8))))
+        except Exception:
+            return format_datetime(datetime(1970, 1, 1, tzinfo=timezone.utc))
+
+    def cdata(s: str) -> str:
+        return "<![CDATA[" + str(s).replace("]]>", "]]]]><![CDATA[>") + "]]>"
+
+    out = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">',
+        "<channel>",
+        "<title>电力动态 POWHOT</title>",
+        f"<link>{base}/</link>",
+        "<description>电力行业动态聚合 · 每日精选与 AI 摘要</description>",
+        "<language>zh-CN</language>",
+        f"<lastBuildDate>{rfc822(items[0].get('date', '') if items else '')}</lastBuildDate>",
+        f'<atom:link href="{base}/feed.xml" rel="self" type="application/rss+xml" />',
+    ]
+    for it in picked:
+        link = f"{base}/#/item/{it['id']}"
+        desc = it.get("ai") or it.get("excerpt") or ""
+        body = [f"<p>{desc}</p>"]
+        if it.get("images"):
+            body.append(f'<p><img src="{base}/{it["images"][0]}" alt="" /></p>')
+        body.append(f'<p>来源：{it.get("org","")} ｜ '
+                    f'<a href="{it.get("url","")}">原文</a> ｜ '
+                    f'<a href="{link}">站内详情</a></p>')
+        out += [
+            "<item>",
+            f"<title>{cdata(it.get('title',''))}</title>",
+            f"<link>{link}</link>",
+            f'<guid isPermaLink="false">powhot-{it["id"]}</guid>',
+            f"<pubDate>{rfc822(it.get('date',''), it.get('time',''))}</pubDate>",
+            f"<category>{cdata(it.get('category',''))}</category>",
+            f"<description>{cdata(''.join(body))}</description>",
+            "</item>",
+        ]
+    out += ["</channel>", "</rss>"]
+    feed = "\n".join(out)
+
+    path = os.path.join(SITE_ROOT, "site", "feed.xml")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(feed)
+    return path
+
+
+def stamp_assets() -> str:
+    """给 index.html 里的 CSS/JS 引用打上内容哈希，避免 CDN 与浏览器缓存旧版本。
+
+    实测部署侧的静态服务会按 Accept-Encoding 分缓存条目：curl 已能取到新版 CSS，
+    而浏览器仍拿到旧版（旧版含 aspect-ratio、缺 media-detail），导致改了样式却看不到效果。
+    带 ?v=<内容哈希> 是绕过这类缓存的通用做法，且只在资源真变化时才改版本号。
+    """
+    idx = os.path.join(SITE_ROOT, "site", "index.html")
+    if not os.path.isfile(idx):
+        return ""
+    parts = []
+    for rel in ("assets/style.css", "assets/app.js"):
+        fp = os.path.join(SITE_ROOT, "site", rel)
+        if os.path.isfile(fp):
+            parts.append(file_md5(fp))
+    if not parts:
+        return ""
+    v = hashlib.md5("".join(parts).encode()).hexdigest()[:8]
+
+    with open(idx, encoding="utf-8") as f:
+        html = f.read()
+    new = re.sub(
+        r"assets/(style\.css|app\.js)(\?v=[0-9a-zA-Z]+)?",
+        lambda m: f"assets/{m.group(1)}?v={v}",
+        html,
+    )
+    if new != html:
+        with open(idx, "w", encoding="utf-8") as f:
+            f.write(new)
+    return v
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--incremental", action="store_true", help="增量模式（保留 body 缓存）")
@@ -911,16 +1079,61 @@ def main():
             by_url[key] = r
     print(f"🔗 URL 去重后 {len(by_url)} 条")
 
+    # 2.5 标题重复合并：只合并"同一篇被抓两次"的真重复。
+    #     ⚠️ 判据必须同时看标题与正文 —— 曾经只用标题相似度，把
+    #     「华中/华北/西北能源监管局召开树立和践行正确政绩观学习教育总结会」
+    #     这类**不同机构的独立新闻**当成重复合并了（标题仅差前两字）。
+    def _body_head(it: dict) -> str:
+        raw = it.get("raw") or ""
+        seg = raw.split("\n---\n", 1)[-1]
+        return _norm_text(re.sub(r"!\[[^\]]*\]\([^)]+\)", "", seg))[:300]
+
+    deduped: dict[str, dict] = {}
+    dropped_dup: list[tuple[str, str]] = []
+    for key, it in by_url.items():
+        tnorm = _norm_text(it.get("title") or "")
+        if len(tnorm) < 15:
+            deduped[key] = it
+            continue
+        body_head = _body_head(it)
+        hit = None
+        for k2, it2 in deduped.items():
+            if _norm_text(it2.get("title") or "") != tnorm:
+                continue          # 标题必须完全一致
+            b2 = _body_head(it2)
+            if body_head and b2 and containment(body_head, b2) >= 0.90:
+                hit = k2           # 正文开头也几乎一致 → 同一篇
+                break
+        if hit is None:
+            deduped[key] = it
+        else:
+            if len(it.get("raw") or "") > len(deduped[hit].get("raw") or ""):
+                dropped_dup.append((deduped[hit]["title"], it["title"]))
+                deduped[hit] = it
+            else:
+                dropped_dup.append((it["title"], deduped[hit]["title"]))
+    if dropped_dup:
+        print(f"🧹 标题重复合并：{len(dropped_dup)} 组（标题全同且正文开头一致）")
+        for a, b in dropped_dup[:4]:
+            print(f"   「{a[:30]}」")
+    by_url = deduped
+
     # 3. 富化：清洗正文 + 提取配图
     items: list[dict] = []
     img_root = os.path.join(SITE_ROOT, "site", "images")
     if os.path.isdir(img_root):
         shutil.rmtree(img_root)
     os.makedirs(img_root, exist_ok=True)
+    files_root = os.path.join(SITE_ROOT, "site", "files")
+    if os.path.isdir(files_root):
+        shutil.rmtree(files_root)
+    os.makedirs(files_root, exist_ok=True)
     no_body = 0
+    att_total = 0        # 已复制附件累计体积
+    att_skipped = 0      # 因超限被跳过的附件数
 
     # 预处理：识别站点推广素材（跨文章重复出现），避免当成新闻配图
-    img_blacklist = build_image_blacklist(by_url)
+    img_blacklist = build_image_blacklist(by_url, threshold=2)
     if img_blacklist:
         print(f"🖼️  剔除 {len(img_blacklist)} 张站点推广素材（跨文章重复出现）")
 
@@ -944,19 +1157,44 @@ def main():
         date = it.get("date") or ""
         ai = (ai_map.get(url) or "").strip()
         excerpt = make_excerpt(body)
-        m_att = re.search(r"\*\*附件\*\*[:：]\s*(\d+)", raw)
-        att_count = int(m_att.group(1)) if m_att else 0
+
+        # 附件：复制到站点 files/<id>/，前端提供下载（受体积上限约束）
+        att_out: list[dict] = []
+        for idx, src in enumerate((it.get("attachments") or [])[:5], 1):
+            try:
+                size = os.path.getsize(src)
+            except Exception:
+                continue
+            if size > MAX_ATTACH_BYTES or att_total + size > MAX_ATTACH_TOTAL:
+                att_skipped += 1
+                continue
+            ext = os.path.splitext(src)[1] or ".bin"
+            rel_out = f"files/{iid}/{idx}{ext}"
+            dest = os.path.join(SITE_ROOT, "site", rel_out)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            try:
+                shutil.copy2(src, dest)
+                att_total += size
+                att_out.append({
+                    "name": os.path.basename(src),
+                    "path": rel_out,
+                    "size": size,
+                })
+            except Exception:
+                pass
 
         cat = derive_category(title, column, org, body, ai)
         tags = derive_tags(title, cat, org, body, ai)
-        pub_time = extract_pub_time(body[:800])
+        # 发布时间要从**原始 md** 提取 —— 清洗后的正文里已经不含
+        # "2026-08-03 19:15 来源：..." 这类时间戳了
+        pub_time = extract_pub_time(raw) or extract_pub_time(body[:800])
 
         items.append({
             "id": iid,
             "title": title,
             "short_title": make_short_title(title),
             "org": org,
-            "org_short": ORG_META.get(org, (org, ""))[1],
+            "org_short": org_short_name(org),
             "column": column,
             "category": cat,
             "date": date,
@@ -967,8 +1205,9 @@ def main():
             "body_len": len(body),
             "images": images,
             "tags": tags,
-            "has_attachment": att_count > 0,
-            "attachment_count": att_count,
+            "has_attachment": bool(att_out),
+            "attachment_count": len(att_out),
+            "files": att_out,
             "list_summary": it.get("list_summary", ""),
             "_body": body,
             "_attachments": [],
@@ -1021,11 +1260,15 @@ def main():
     # 7.5 主题聚合与周期报告（只引用条目 id，前端按需从 news.json 取细节）
     topics_data = build_topics(slim_items)
     reports_data = build_reports(slim_items)
+    trends_data = build_trends(slim_items)
     data_dir = os.path.dirname(OUT_JSON)
-    with open(os.path.join(data_dir, "topics.json"), "w", encoding="utf-8") as f:
-        json.dump(topics_data, f, ensure_ascii=False, separators=(",", ":"))
-    with open(os.path.join(data_dir, "reports.json"), "w", encoding="utf-8") as f:
-        json.dump(reports_data, f, ensure_ascii=False, separators=(",", ":"))
+    for name, data in (("topics.json", topics_data),
+                       ("reports.json", reports_data),
+                       ("trends.json", trends_data)):
+        with open(os.path.join(data_dir, name), "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
+    feed_path = write_feed(slim_items)
+    print(f"📡 已生成 RSS 订阅源: {os.path.relpath(feed_path, SITE_ROOT)}")
 
     payload = {
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -1056,6 +1299,10 @@ def main():
     print(f"   分类分布: {payload['stats']['by_category']}")
     print(f"   机构分布: {payload['stats']['by_org']}")
     print(f"   列表数据: {size_kb:.0f} KB  详情数据: {len(os.listdir(body_dir))} 个文件")
+
+    asset_v = stamp_assets()
+    if asset_v:
+        print(f"🔖 静态资源版本号: {asset_v}")
 
 
 if __name__ == "__main__":

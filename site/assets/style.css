@@ -1271,6 +1271,52 @@ svg { display: block; }
 /* 报告正文里的配图收窄并压低上限，避免单图占满整屏 */
 .report-story .media-grid { max-width: 420px; margin-top: 10px; --media-max-h: 240px; }
 
+/* -------------------------------------------------------------- 时间列 / 附件 / 趋势图 */
+
+/* 无发布时间时时间列显示来源缩写，避免大面积留白 */
+.time-src {
+  font-size: 10px;
+  letter-spacing: 0.3px;
+  color: var(--text-2);
+  opacity: 0.7;
+}
+
+/* 附件下载 */
+.attach-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  margin: 0 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-card);
+  font-size: 13px;
+  color: var(--text-1);
+  transition: border-color var(--dur-fast), color var(--dur-fast);
+  word-break: break-all;
+}
+.attach-line:hover { border-color: var(--brand-teal); color: var(--brand-teal); }
+.attach-name { flex: 1; min-width: 0; }
+.attach-size {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11.5px;
+  color: var(--text-2);
+  flex-shrink: 0;
+}
+
+/* 趋势图 */
+.trend-svg { width: 100%; height: auto; display: block; margin: 4px 0 10px; }
+.tc-grid { stroke: var(--border-soft); stroke-width: 1; }
+.tc-x, .tc-y {
+  font-size: 9.5px;
+  fill: var(--text-2);
+  font-family: ui-monospace, Menlo, monospace;
+}
+.tc-legends { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11.5px; color: var(--text-2); }
+.tc-legend { display: inline-flex; align-items: center; gap: 4px; }
+.tc-legend i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+
 /* -------------------------------------------------------------- 响应式 */
 
 @media (max-width: 1000px) {

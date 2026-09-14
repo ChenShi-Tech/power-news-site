@@ -1,0 +1,68 @@
+name: Deploy site to GitHub Pages
+
+# 作用：把仓库里的 site/ 目录发布到 GitHub Pages，
+# 形成一条**不依赖本地环境**的独立发布链路（WorkBuddy 自动化之外的备份通道）。
+#
+# 注意：本仓库只包含构建产物，不含采集归档（data/ 在另一台机器上）。
+# 因此这里不做「重新构建」，只做「部署已有产物」。
+# 本地每日构建推送后，本工作流会自动把最新站点发布出去。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - '.github/workflows/deploy-pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 校验数据文件完整性
+        run: |
+          set -e
+          for f in site/index.html site/data/news.json site/data/topics.json \
+                   site/data/reports.json site/data/trends.json site/feed.xml; do
+            if [ ! -f "$f" ]; then echo "::error::缺少 $f"; exit 1; fi
+            echo "✔ $f  ($(wc -c < "$f") bytes)"
+          done
+          python3 - <<'PY'
+          import json, sys
+          for name in ("news", "topics", "reports", "trends"):
+              p = f"site/data/{name}.json"
+              with open(p, encoding="utf-8") as f:
+                  json.load(f)
+              print(f"✔ {p} JSON 有效")
+          n = len(json.load(open("site/data/news.json", encoding="utf-8"))["items"])
+          print(f"条目总数：{n}")
+          if n == 0:
+              sys.exit("条目为 0，疑似构建异常")
+          PY
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

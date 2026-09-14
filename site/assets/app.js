@@ -268,6 +268,13 @@
     document.body.appendChild(el);
   }
 
+  function fmtSize(n) {
+    if (!n) return '';
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return Math.round(n / 1024) + ' KB';
+    return (n / 1024 / 1024).toFixed(1) + ' MB';
+  }
+
   /* 超宽扁图（宽高比 > 2.6）在 2 列网格里会被压成一条细缝，标成整行显示。
      图片原始尺寸在加载后才可知，故用 load 事件补齐。 */
   const WIDE_RATIO = 2.6;
@@ -361,7 +368,7 @@
         </div>
         <div class="timeline-day-items">
           ${arr.map((it) => `<div class="timeline-item">
-            <div class="timeline-time">${esc(it.time || '')}</div>
+            <div class="timeline-time">${it.time ? esc(it.time) : `<span class="time-src" style="color:${orgColor(it.org)}">${esc(it.org_short || (it.org || '').slice(0, 3))}</span>`}</div>
             <div class="timeline-rail"><span class="timeline-dot"></span></div>
             ${cardHtml(it)}
           </div>`).join('')}
@@ -463,9 +470,22 @@
       weekOf(it.date) ? esc(weekOf(it.date)) : '',
     ].filter(Boolean).join('<span class="dot"></span>');
 
+    // 相关阅读：按标签重合度排序（原实现只按同分类取前几条，相关度很低）
+    const myTags = new Set(it.tags || []);
     const related = state.items
-      .filter((x) => x.id !== it.id && x.category === it.category)
-      .slice(0, 5);
+      .filter((x) => x.id !== it.id)
+      .map((x) => {
+        const share = (x.tags || []).filter((t) => myTags.has(t)).length;
+        const score = share * 2
+          + (x.category === it.category ? 1 : 0)
+          + (x.org === it.org ? 1 : 0);
+        return { x, score, share };
+      })
+      .filter((o) => o.score > 0)
+      .sort((a, b) => b.score - a.score
+        || (a.x.date < b.x.date ? 1 : a.x.date > b.x.date ? -1 : 0))
+      .slice(0, 5)
+      .map((o) => o.x);
 
     view.innerHTML = `<div class="page-wide">
       <div class="detail-top">
@@ -510,10 +530,19 @@
             <p>该来源未收录可展示的正文，站内仅提供摘要。</p>
            </div>`}
 
-      ${(body.attachments || []).length ? `<div class="panel" style="margin-top:20px">
-        <h2 class="panel-title">附件（${body.attachments.length}）</h2>
-        ${body.attachments.map((a) => `<p class="attach-line">${esc(a)}</p>`).join('')}
-      </div>` : ''}
+      ${(it.files || []).length ? `<div class="panel" style="margin-top:20px">
+        <h2 class="panel-title">
+          <svg viewBox="0 0 12 12"><path d="M7.4 2.6 3.9 6.1a1.6 1.6 0 0 0 2.3 2.3l3.9-3.9a2.6 2.6 0 0 0-3.7-3.7L2.7 4.5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+          附件（${it.files.length}）
+        </h2>
+        ${it.files.map((f) => `<a class="attach-line" href="${esc(f.path)}" download>
+          <span class="attach-name">${esc(f.name.replace(/^.*?-附件/, '附件'))}</span>
+          <span class="attach-size">${fmtSize(f.size)}</span>
+        </a>`).join('')}
+      </div>` : (it.attachment_count ? `<div class="panel" style="margin-top:20px">
+        <h2 class="panel-title">附件（${it.attachment_count}）</h2>
+        <p class="hint">附件体积较大，未同步到本站，请到源站下载。</p>
+      </div>` : '')}
 
       <div class="orig-foot">
         <span>源站原文</span>
@@ -717,10 +746,84 @@
     window.scrollTo(0, 0);
   }
 
+  /* ------------------------------------------------------------ 趋势图 */
+
+  let trendsCache = null;
+  async function loadTrends() {
+    if (!trendsCache) {
+      const r = await fetch('data/trends.json', { cache: 'no-cache' });
+      trendsCache = await r.json();
+    }
+    return trendsCache;
+  }
+
+  const CAT_COLOR = {
+    '政策法规': '#176b75', '电力市场': '#b8873a', '新能源': '#2f7d5c',
+    '电网建设': '#4e6ca8', '安全生产': '#b3402a', '资质监管': '#7b8794',
+    '企业动态': '#7f64a8', '数据统计': '#4a7a80',
+  };
+
+  function trendChart(t) {
+    const W = 680, H = 210, PADL = 30, PADB = 46, PADT = 8;
+    const n = t.days.length;
+    if (!n) return '';
+    const maxV = Math.max.apply(null, t.total.concat([1]));
+    const innerW = W - PADL - 8;
+    const innerH = H - PADT - PADB;
+    const step = innerW / n;
+    const bw = Math.max(8, Math.min(40, step - 8));
+
+    let bars = '';
+    t.days.forEach((d, i) => {
+      const x = PADL + i * step + (step - bw) / 2;
+      let y = PADT + innerH;
+      t.categories.forEach((c) => {
+        const v = t.series[c][i] || 0;
+        if (!v) return;
+        const h = (v / maxV) * innerH;
+        y -= h;
+        bars += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" `
+          + `height="${h.toFixed(1)}" fill="${CAT_COLOR[c] || '#8a94a2'}" rx="1.5">`
+          + `<title>${esc(d)} ${esc(c)} ${v} 条</title></rect>`;
+      });
+      // 日期标签（密集时隔一个显示）
+      if (n <= 12 || i % 2 === 0) {
+        const label = d.slice(5).replace('-', '/');
+        bars += `<text x="${(x + bw / 2).toFixed(1)}" y="${H - PADB + 16}" `
+          + `text-anchor="middle" class="tc-x">${esc(label)}</text>`;
+      }
+    });
+
+    // Y 轴刻度
+    let axis = '';
+    [0, 0.5, 1].forEach((r) => {
+      const v = Math.round(maxV * r);
+      const y = PADT + innerH - innerH * r;
+      axis += `<line x1="${PADL}" y1="${y.toFixed(1)}" x2="${W - 8}" y2="${y.toFixed(1)}" class="tc-grid"/>`
+        + `<text x="${PADL - 6}" y="${(y + 3.5).toFixed(1)}" text-anchor="end" class="tc-y">${v}</text>`;
+    });
+
+    const legend = t.categories
+      .map((c) => `<span class="tc-legend"><i style="background:${CAT_COLOR[c] || '#8a94a2'}"></i>${esc(c)}</span>`)
+      .join('');
+
+    return `<div class="panel">
+      <h2 class="panel-title">每日发布量（按分类堆叠）</h2>
+      <svg class="trend-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
+        ${axis}${bars}
+      </svg>
+      <div class="tc-legends">${legend}</div>
+    </div>`;
+  }
+
   /* ------------------------------------------------------------ 关于页 */
 
-  function renderAbout() {
+  async function renderAbout() {
     const s = state.data.stats;
+    let trendHtml = '';
+    try {
+      trendHtml = trendChart(await loadTrends());
+    } catch (e) { /* 趋势数据缺失时静默降级 */ }
     const orgs = Object.entries(s.by_org || {});
     const maxOrg = Math.max.apply(null, orgs.map((o) => o[1]).concat([1]));
     const cats = Object.entries(s.by_category || {});
@@ -735,6 +838,8 @@
           <div class="stat"><div class="stat-num">${orgs.length}</div><div class="stat-label">信息源</div></div>
           <div class="stat"><div class="stat-num">${Math.round(s.ai_covered / Math.max(s.total, 1) * 100)}%</div><div class="stat-label">AI 摘要覆盖</div></div>
         </div>
+
+        ${trendHtml}
 
         <div class="panel">
           <h2 class="panel-title">数据来源</h2>
@@ -805,7 +910,7 @@
 
     if (root === 'about') {
       markActiveNav('about');
-      renderAbout();
+      await renderAbout();
       window.scrollTo(0, 0);
       return;
     }
