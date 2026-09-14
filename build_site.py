@@ -487,8 +487,43 @@ def load_ai_summaries() -> dict:
     return out
 
 
+def file_md5(path: str) -> str:
+    h = hashlib.md5()
+    try:
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return ""
+
+
+def build_image_blacklist(by_url: dict, threshold: int = 3) -> set:
+    """找出跨多篇文章重复出现的图片 —— 这类是站点推广素材/二维码，不是新闻配图。
+
+    实测中国能源报每篇文章都挂同一套推广横幅与公众号二维码（"总书记的能源足迹"等），
+    它们的 URL（img-rs CDN 的 imageDir 路径）不含 logo/qrcode/banner 等关键词，
+    靠 URL 规则过滤不掉；但会在每篇文章里原样重复，用"出现篇数"判定最可靠。
+    """
+    from collections import Counter
+    cnt: Counter = Counter()
+    for url, it in by_url.items():
+        raw = it.get("raw") or ""
+        base = os.path.dirname(os.path.join(SOURCE_ROOT, it.get("archive", "")))
+        seen = set()
+        for rel in RE_MD_IMG.findall(raw):
+            src = os.path.normpath(os.path.join(base, rel))
+            if not os.path.isfile(src):
+                continue
+            h = file_md5(src)
+            if h and h not in seen:
+                seen.add(h)
+                cnt[h] += 1
+    return {h for h, n in cnt.items() if n >= threshold}
+
+
 def collect_images(raw_md: str, md_path: str, iid: str, img_root: str,
-                   limit: int = 6) -> list[str]:
+                   limit: int = 6, blacklist: set = None) -> list[str]:
     """把正文 md 里引用的配图复制到站点 images/<id>/ 下。
 
     返回站点相对路径列表（如 images/<id>/1.jpg），供 news.json 与前端消费。
@@ -504,6 +539,9 @@ def collect_images(raw_md: str, md_path: str, iid: str, img_root: str,
             break
         src = os.path.normpath(os.path.join(base, rel))
         if not os.path.isfile(src):
+            continue
+        # 站点推广素材/二维码（多篇文章共用）不作为新闻配图
+        if blacklist and file_md5(src) in blacklist:
             continue
         ext = os.path.splitext(src)[1].lower() or ".jpg"
         name = f"{len(out) + 1}{ext}"
@@ -881,6 +919,11 @@ def main():
     os.makedirs(img_root, exist_ok=True)
     no_body = 0
 
+    # 预处理：识别站点推广素材（跨文章重复出现），避免当成新闻配图
+    img_blacklist = build_image_blacklist(by_url)
+    if img_blacklist:
+        print(f"🖼️  剔除 {len(img_blacklist)} 张站点推广素材（跨文章重复出现）")
+
     for url, it in by_url.items():
         iid = hashlib.sha1(url.encode("utf-8")).hexdigest()[:14]
         raw = it.get("raw") or ""
@@ -889,7 +932,7 @@ def main():
         org = it["org"]
         column = it["column"]
 
-        images = collect_images(raw, apath, iid, img_root)
+        images = collect_images(raw, apath, iid, img_root, blacklist=img_blacklist)
         try:
             body, _ = clean_body(raw, title)
         except Exception as e:

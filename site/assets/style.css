@@ -976,13 +976,19 @@ svg { display: block; }
   display: grid;
   gap: 6px;
   margin-top: 11px;
-  border-radius: var(--radius-sm);
-  overflow: hidden;
+  align-items: start;
 }
 .media-grid[data-count="1"] { grid-template-columns: 1fr; }
-.media-grid[data-count="2"] { grid-template-columns: 1fr 1fr; }
-.media-grid[data-count="3"], .media-grid[data-count="4"] { grid-template-columns: 1fr 1fr; }
-.media-grid[data-count="5"], .media-grid[data-count="6"] { grid-template-columns: repeat(3, 1fr); }
+/* 2 列是上限：配图多为公告/表格截图，3 列会让文字小到读不出来 */
+.media-grid[data-count="2"],
+.media-grid[data-count="3"],
+.media-grid[data-count="4"],
+.media-grid[data-count="5"],
+.media-grid[data-count="6"] { grid-template-columns: 1fr 1fr; }
+
+/* 超宽扁图（宽高比 > 2.6，如 1185×109 的横幅/标题条）按列排会压成一条细缝，
+   由 JS 在图片加载后加此标记，让它独占整行 */
+.media-cell.media-wide { grid-column: 1 / -1; }
 
 .media-cell {
   display: block;
@@ -992,17 +998,25 @@ svg { display: block; }
   background: var(--surface-1);
   overflow: hidden;
   cursor: zoom-in;
-  aspect-ratio: 16 / 10;
 }
-.media-grid[data-count="1"] .media-cell { aspect-ratio: 16 / 9; }
+
+/* 保持原始宽高比，不做固定比例裁切。
+   实测配图比例跨度极大（竖图 1131×1600、超宽扁 1185×109、正方形 194×194），
+   且多为公告表格与名单截图 —— 用 aspect-ratio + object-fit:cover 会把竖图截掉
+   大半、把横幅压成一条，直接丢失信息。
+   max-height 配合 object-fit:contain 只做上限约束，图片完整不变形。 */
 .media-img {
   width: 100%;
-  height: 100%;
-  object-fit: cover;
+  height: auto;
+  max-height: var(--media-max-h, 300px);
+  object-fit: contain;
   display: block;
   transition: transform var(--dur-base) var(--ease-out);
 }
-.media-cell:hover .media-img { transform: scale(1.03); }
+.media-cell:hover .media-img { transform: scale(1.015); }
+
+/* 详情页给配图更大空间；报告页收窄并压低上限 */
+.media-detail { --media-max-h: 620px; }
 
 /* 大图查看 */
 .lightbox {
@@ -1254,9 +1268,8 @@ svg { display: block; }
 .report-source-action { color: var(--brand-teal); }
 .report-source-action:hover { text-decoration: underline; }
 
-/* 报告正文里的配图收窄，避免单图占满整屏 */
-.report-story .media-grid { max-width: 400px; margin-top: 10px; }
-.report-story .media-grid[data-count="1"] .media-cell { aspect-ratio: 16 / 10; }
+/* 报告正文里的配图收窄并压低上限，避免单图占满整屏 */
+.report-story .media-grid { max-width: 420px; margin-top: 10px; --media-max-h: 240px; }
 
 /* -------------------------------------------------------------- 响应式 */
 
@@ -1338,7 +1351,7 @@ svg { display: block; }
   .report-title { font-size: 1.3rem; }
   .report-story { grid-template-columns: 24px minmax(0, 1fr); gap: 9px; }
   .topics-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
-  .media-grid[data-count="5"], .media-grid[data-count="6"] { grid-template-columns: 1fr 1fr; }
+  :root { --media-max-h: 220px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

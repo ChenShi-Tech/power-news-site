@@ -3,8 +3,9 @@
 电力行业公开信息聚合站。信息架构与视觉复刻 [aihot.news](https://aihot.news/)，
 数据消费自本机已有的「电力资料每日采集」任务。
 
-- 线上站点：https://b5586b6c5c5e47b588ce4c3be805573e.app.workbuddy.host
-- 代码仓库：https://github.com/ChenShi-Tech/power-news-site （私有）
+- 线上站点：https://powhot-electric-news.app.workbuddy.host/
+- 代码仓库：https://github.com/ChenShi-Tech/power-news-site （公开）
+- 发布应用 ID：`wbapp_GzlEj6ok9YYQcozvEFLWs2`（每日自动化按此 appId 复用，链接保持不变）
 
 ## 与上游采集任务的关系
 
@@ -140,4 +141,10 @@ logo/icon/二维码/广告等 UI 元素，带 Referer 下载到 `data/.../images
 
 ## 版权
 
-聚合工具，所有内容版权归原发布机构所有，每条均保留原文链接。
+本站是信息聚合工具，**所有内容版权归原发布机构所有**（国家能源局、国家发展改革委、
+中国电力企业联合会、中国南方电网、各区域能源监管局、中国能源报、北极星电力网等），
+每条均保留原文链接，请以源站发布为准。
+
+本仓库中的代码（`build_site.py` 与 `site/assets/`）可自由参考使用；
+`site/data/` 与 `site/images/` 为上述机构的公开信息归档，不适用代码许可，
+转载与再使用请遵循原发布机构的要求。

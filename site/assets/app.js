@@ -247,7 +247,7 @@
     if (!images || !images.length) return '';
     const max = opts.max || 6;
     const list = images.slice(0, max);
-    return `<div class="media-grid" data-count="${list.length}">
+    return `<div class="media-grid${opts.detail ? ' media-detail' : ''}" data-count="${list.length}">
       ${list.map((src, i) => `<button type="button" class="media-cell" data-src="${esc(src)}" aria-label="查看大图 ${i + 1}/${list.length}">
         <img class="media-img" src="${esc(src)}" loading="lazy" decoding="async" alt="">
       </button>`).join('')}
@@ -266,6 +266,28 @@
       if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey); }
     });
     document.body.appendChild(el);
+  }
+
+  /* 超宽扁图（宽高比 > 2.6）在 2 列网格里会被压成一条细缝，标成整行显示。
+     图片原始尺寸在加载后才可知，故用 load 事件补齐。 */
+  const WIDE_RATIO = 2.6;
+  function layoutMedia() {
+    document.querySelectorAll('.media-grid .media-img').forEach((img) => {
+      const cell = img.closest('.media-cell');
+      if (!cell) return;
+      const apply = () => {
+        if (!img.naturalHeight) return;
+        cell.classList.toggle('media-wide', img.naturalWidth / img.naturalHeight > WIDE_RATIO);
+      };
+      if (img.complete) apply();
+      else img.addEventListener('load', apply, { once: true });
+    });
+  }
+
+  let mediaTimer = null;
+  function scheduleMediaLayout() {
+    clearTimeout(mediaTimer);
+    mediaTimer = setTimeout(layoutMedia, 80);
   }
 
   function cardHtml(it, opts) {
@@ -482,7 +504,7 @@
         原文
         ${bodyChars ? `<span class="section-note">${bodyChars} 字</span>` : ''}
       </h2>
-      ${mediaHtml(it.images, { max: 6 })}
+      ${mediaHtml(it.images, { max: 6, detail: true })}
       ${paras.length ? `<div class="prose">${paras.map((p) => `<p>${esc(p)}</p>`).join('')}</div>`
         : `<div class="origbox origbox-missing">
             <p>该来源未收录可展示的正文，站内仅提供摘要。</p>
@@ -914,6 +936,10 @@
         renderCurrent();
       }
     });
+
+    // 配图布局：任何视图渲染后自动标注超宽图
+    new MutationObserver(scheduleMediaLayout)
+      .observe(document.body, { childList: true, subtree: true });
 
     // 回到顶部
     const btn = document.createElement('button');
