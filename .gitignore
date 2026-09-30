@@ -21,3 +21,6 @@ summaries.json.bak
 
 # 本机自动化执行记录（含本地路径，不入库）
 .workbuddy/memory/
+
+# Zotero 政策文本入库暂存区（与站点无关，含 >100MB 的大体积 PDF，不入库）
+zotero_policy_import/
